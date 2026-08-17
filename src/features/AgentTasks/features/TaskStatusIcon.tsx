@@ -2,7 +2,7 @@ import type { TaskStatus } from '@lobechat/types';
 import { ActionIcon } from '@lobehub/ui';
 import { memo } from 'react';
 
-import { getTaskStatusMeta } from '@/components/StatusIcon';
+import { TASK_STATUS_VISUALS } from '@/components/ExecutionStatus';
 import { taskListSelectors } from '@/store/task/selectors';
 
 interface TaskStatusIconProps {
@@ -12,7 +12,7 @@ interface TaskStatusIconProps {
 
 const TaskStatusIcon = memo<TaskStatusIconProps>(({ size = 16, status }) => {
   const displayStatus = taskListSelectors.getDisplayStatus(status);
-  const meta = getTaskStatusMeta(status);
+  const meta = TASK_STATUS_VISUALS[status as TaskStatus] ?? TASK_STATUS_VISUALS.backlog;
 
   return (
     <ActionIcon

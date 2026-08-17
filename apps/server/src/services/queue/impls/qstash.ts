@@ -8,6 +8,18 @@ import { type QueueServiceImpl } from './type';
 const log = debug('lobe-server:service:queue:qstash');
 
 /**
+ * QStash's `delay` option is second-granularity — the `Duration` string form
+ * (`10s`, `1m`, `2h`, `1d`) has no millisecond unit, and a bare number is
+ * treated as seconds (so `100` would mean 100s, not 100ms). Positive
+ * sub-second delays are rounded up to 1s.
+ */
+const toQStashDelaySeconds = (delayMs: number): number | undefined => {
+  if (delayMs <= 0) return undefined;
+
+  return Math.max(1, Math.round(delayMs / 1000));
+};
+
+/**
  * QStash queue service implementation
  */
 export class QStashQueueServiceImpl implements QueueServiceImpl {
@@ -37,6 +49,7 @@ export class QStashQueueServiceImpl implements QueueServiceImpl {
     try {
       log('Initialized QStash queue service');
       const qstashClient = new OtelQstashClient({ token: this.config.qstashToken });
+      const qstashDelay = toQStashDelaySeconds(delay);
       const request = {
         body: {
           context,
@@ -46,10 +59,7 @@ export class QStashQueueServiceImpl implements QueueServiceImpl {
           stepIndex,
           timestamp: Date.now(),
         },
-        // QStash delay granularity is whole seconds, so sub-second step delays
-        // can't be expressed. Ceiling them up padded every step to a full second;
-        // instead dispatch immediately (0) and only delay for >= 1s intents.
-        delay: delay >= 1000 ? Math.round(delay / 1000) : 0,
+        ...(qstashDelay === undefined ? {} : { delay: qstashDelay }),
         headers: {
           'Content-Type': 'application/json',
           'X-Agent-Operation-Id': operationId,

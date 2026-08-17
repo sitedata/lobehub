@@ -13,9 +13,8 @@ import {
   Text,
 } from '@lobehub/ui';
 import type { DropdownItem } from '@lobehub/ui/base-ui';
-import { confirmModal, DropdownMenu } from '@lobehub/ui/base-ui';
-import { App } from 'antd';
-import { createStaticStyles, cssVar, useResponsive } from 'antd-style';
+import { confirmModal, DropdownMenu, toast } from '@lobehub/ui/base-ui';
+import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs from 'dayjs';
 import isEqual from 'fast-deep-equal';
 import {
@@ -29,8 +28,9 @@ import {
   Pencil,
   Search,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react';
-import { memo, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 
@@ -43,7 +43,8 @@ import { verifyService } from '@/services/verify';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 
-import { useVerifyReportSummaries } from '../hooks';
+import { useVerifyReportSummariesInfinite } from '../hooks';
+import type { ReportPanelExpand } from './useReportPanelExpand';
 
 const PANEL_MIN = 260;
 const PANEL_MAX = 420;
@@ -221,6 +222,19 @@ const styles = createStaticStyles(({ css }) => ({
       color: ${cssVar.colorText};
     }
   `,
+  loadMoreError: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+
+    padding-block: 10px;
+    padding-inline: 12px;
+
+    font-size: 12px;
+    color: ${cssVar.colorTextTertiary};
+  `,
 }));
 
 type Glyph = 'ok' | 'bad' | 'unsure' | 'running';
@@ -256,7 +270,7 @@ const ReportListItem = memo<{
   onReportsChanged: () => Promise<unknown> | unknown;
 }>(({ active, item, onReportsChanged }) => {
   const { t } = useTranslation(['verify', 'common']);
-  const { message } = App.useApp();
+
   const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(item.run.title || '');
@@ -297,7 +311,7 @@ const ReportListItem = memo<{
 
     const nextTitle = draftTitle.trim();
     if (!nextTitle) {
-      message.error(t('verify:workspace.renameEmpty'));
+      toast.error(t('verify:workspace.renameEmpty'));
       setDraftTitle(item.run.title || '');
       setEditing(false);
       return;
@@ -313,11 +327,11 @@ const ReportListItem = memo<{
     try {
       await verifyService.updateRunTitle(item.run.id, nextTitle);
       await refreshRelatedReports();
-      message.success(t('verify:workspace.renameSuccess'));
+      toast.success(t('verify:workspace.renameSuccess'));
       setEditing(false);
     } catch (error) {
       console.error('[verify:renameReport]', error);
-      message.error(t('verify:workspace.renameError'));
+      toast.error(t('verify:workspace.renameError'));
     } finally {
       isSavingRef.current = false;
       setMutating(false);
@@ -339,10 +353,10 @@ const ReportListItem = memo<{
             onReportsChanged(),
             mutate(verifyKeys.reportBundle(item.run.id), null, { revalidate: false }),
           ]);
-          message.success(t('verify:workspace.deleteSuccess'));
+          toast.success(t('verify:workspace.deleteSuccess'));
         } catch (error) {
           console.error('[verify:deleteReport]', error);
-          message.error(t('verify:workspace.deleteError'));
+          toast.error(t('verify:workspace.deleteError'));
         } finally {
           setMutating(false);
         }
@@ -416,6 +430,7 @@ const ReportListItem = memo<{
     <NavItem
       active={active}
       description={description}
+      style={mutating ? { opacity: 0.62, pointerEvents: 'none' } : undefined}
       title={title}
       titleColor={cssVar.colorText}
       actions={
@@ -440,7 +455,6 @@ const ReportListItem = memo<{
           style={{ color: meta.color }}
         />
       }
-      style={mutating ? { opacity: 0.62, pointerEvents: 'none' } : undefined}
       onClick={() => navigate(`/verify/${item.run.id}`)}
     />
   );
@@ -448,28 +462,27 @@ const ReportListItem = memo<{
 
 ReportListItem.displayName = 'ReportListItem';
 
-const ReportListPanel = memo(() => {
+const ReportListPanel = memo<ReportPanelExpand>(({ expand, isNarrow, setExpand }) => {
   const { t } = useTranslation('verify');
   const { runId } = useParams<{ runId: string }>();
-  const { md = true } = useResponsive();
-  const { data, isLoading, mutate: refreshReports } = useVerifyReportSummaries();
-  const reports = useMemo(() => data ?? [], [data]);
 
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  // Debounce the server-side search so each keystroke doesn't fire a query.
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => clearTimeout(id);
+  }, [query]);
 
-  const [showPanel, panelWidth, updateSystemStatus] = useGlobalStore((s) => [
-    systemStatusSelectors.showVerifyReportPanel(s),
+  const { items, error, hasMore, isLoadingInitial, isLoadingMore, loadMore, reload } =
+    useVerifyReportSummariesInfinite(debouncedQuery);
+
+  const [panelWidth, updateSystemStatus] = useGlobalStore((s) => [
     systemStatusSelectors.verifyReportPanelWidth(s),
     s.updateSystemStatus,
   ]);
   const [tmpWidth, setTmpWidth] = useState(panelWidth);
   if (tmpWidth !== panelWidth) setTmpWidth(panelWidth);
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return reports;
-    return reports.filter((r) => (r.run.title || '').toLowerCase().includes(q));
-  }, [reports, query]);
 
   const handleSizeChange: DraggablePanelProps['onSizeChange'] = (_, size) => {
     if (!size) return;
@@ -479,17 +492,33 @@ const ReportListPanel = memo(() => {
     updateSystemStatus({ verifyReportPanelWidth: w });
   };
 
+  // Infinite scroll: load the next page when a sentinel near the list's end
+  // scrolls into view (rootMargin pre-fetches before the user hits the bottom).
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && hasMore && !isLoadingMore) loadMore();
+      },
+      { rootMargin: '200px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, isLoadingMore, loadMore]);
+
   return (
     <DraggablePanel
       className={styles.panel}
       defaultSize={{ width: tmpWidth }}
-      expand={showPanel}
+      expand={expand}
       maxWidth={PANEL_MAX}
       minWidth={PANEL_MIN}
-      mode={md ? 'fixed' : 'float'}
+      mode={isNarrow ? 'float' : 'fixed'}
       placement={'left'}
       size={{ height: '100%', width: panelWidth }}
-      onExpandChange={(expand) => updateSystemStatus({ showVerifyReportPanel: expand })}
+      onExpandChange={setExpand}
       onSizeChange={handleSizeChange}
     >
       <DraggablePanelContainer style={{ flex: 'none', height: '100%', minWidth: PANEL_MIN }}>
@@ -503,7 +532,7 @@ const ReportListPanel = memo(() => {
               className={styles.collapseBtn}
               title={t('workspace.collapse')}
               type={'button'}
-              onClick={() => updateSystemStatus({ showVerifyReportPanel: false })}
+              onClick={() => setExpand(false)}
             >
               <Icon icon={PanelLeftClose} size={16} />
             </button>
@@ -520,14 +549,27 @@ const ReportListPanel = memo(() => {
         </div>
 
         <Flexbox flex={1} style={{ minHeight: 0, overflowX: 'hidden', overflowY: 'auto' }}>
-          {isLoading && !data ? (
+          {error && items.length === 0 ? (
+            // A failed fetch must read as an error with a retry — not masquerade
+            // as an empty "no reports" page.
+            <Center className={styles.emptyState} gap={12}>
+              <Empty
+                description={t('workspace.loadError')}
+                icon={TriangleAlert}
+                title={t('workspace.loadErrorTitle')}
+              />
+              <button className={styles.clearBtn} type={'button'} onClick={() => reload()}>
+                {t('workspace.retry')}
+              </button>
+            </Center>
+          ) : isLoadingInitial ? (
             <SkeletonList rows={6} style={{ paddingBlock: 6, paddingInline: 8 }} />
-          ) : filtered.length === 0 ? (
-            query.trim() ? (
+          ) : items.length === 0 ? (
+            debouncedQuery ? (
               <div className={styles.empty}>
                 <span className={styles.emptyMsg}>
                   {t('workspace.searchEmptyPrefix')}
-                  <b className={styles.queryHl}>{query.trim()}</b>
+                  <b className={styles.queryHl}>{debouncedQuery}</b>
                   {t('workspace.searchEmptySuffix')}
                 </span>
                 <button className={styles.clearBtn} type={'button'} onClick={() => setQuery('')}>
@@ -545,14 +587,29 @@ const ReportListPanel = memo(() => {
             )
           ) : (
             <div className={styles.list}>
-              {filtered.map((item) => (
+              {items.map((item) => (
                 <ReportListItem
                   active={item.run.id === runId}
                   item={item}
                   key={item.run.id}
-                  onReportsChanged={refreshReports}
+                  onReportsChanged={reload}
                 />
               ))}
+              {/* Sentinel drives infinite scroll; keep it mounted so the observer
+                  can re-fire after each page appends. */}
+              <div aria-hidden ref={sentinelRef} style={{ height: 1 }} />
+              {isLoadingMore ? (
+                <SkeletonList rows={2} style={{ paddingBlock: 6, paddingInline: 8 }} />
+              ) : error ? (
+                // A later page failed (page 1 already rendered above): offer an
+                // inline retry instead of a silently stuck bottom skeleton.
+                <div className={styles.loadMoreError}>
+                  <span>{t('workspace.loadMoreError')}</span>
+                  <button className={styles.clearBtn} type={'button'} onClick={() => reload()}>
+                    {t('workspace.retry')}
+                  </button>
+                </div>
+              ) : null}
             </div>
           )}
         </Flexbox>

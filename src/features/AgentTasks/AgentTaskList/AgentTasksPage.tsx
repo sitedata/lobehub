@@ -10,10 +10,10 @@ import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwar
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePermission } from '@/hooks/usePermission';
 import { useGlobalStore } from '@/store/global';
+import type { TaskViewMode } from '@/store/global/initialState';
 import { systemStatusSelectors } from '@/store/global/selectors';
 import { useTaskStore } from '@/store/task';
 import { taskListSelectors } from '@/store/task/selectors';
-import type { TaskViewMode } from '@/store/task/slices/list/initialState';
 
 import { createTaskModal } from '../CreateTaskModal';
 import Breadcrumb from '../shared/Breadcrumb';
@@ -47,26 +47,56 @@ export const getTaskCreateActionBehavior = ({
   } as const;
 };
 
+interface TaskPageHeaderVisibilityParams {
+  agentId?: string;
+  isEmptyHero: boolean;
+  isMobile: boolean;
+}
+
+export const getTaskPageHeaderVisibility = ({
+  agentId,
+  isEmptyHero,
+  isMobile,
+}: TaskPageHeaderVisibilityParams) => {
+  const isGlobalEmpty = !agentId && isEmptyHero;
+
+  return {
+    showBreadcrumb: !isGlobalEmpty,
+    showTaskAgentPanelToggle: !isGlobalEmpty && shouldRenderTaskAgentPanelToggle(isMobile),
+    showViewOptions: !isGlobalEmpty,
+  };
+};
+
 interface AgentTasksPageProps {
   /**
    * When provided, the page is scoped to a single agent's tasks; otherwise it
    * shows tasks across all agents.
    */
   agentId?: string;
+  /** When provided, shows the complete task workspace scoped to one project. */
+  projectId?: string;
 }
 
-const AgentTasksPage = memo<AgentTasksPageProps>(({ agentId }) => {
+const AgentTasksPage = memo<AgentTasksPageProps>(({ agentId, projectId }) => {
   const navigate = useWorkspaceAwareNavigate();
   const isMobile = useIsMobile();
   const { allowed: canCreateTask, reason } = usePermission('create_content');
-  const viewMode = useTaskStore(taskListSelectors.viewMode);
+  const viewMode = useGlobalStore(systemStatusSelectors.taskListViewMode);
   const useFetchTaskList = useTaskStore((s) => s.useFetchTaskList);
-  // Keep the SWR handle so a failed list fetch surfaces error + Retry instead of
-  // a permanent skeleton (the store only flips `isTaskListInit` on success — see
-  // LOBE-11181). `data` (undefined until first success) is the settled signal.
-  const { data, error, isLoading, mutate } = useFetchTaskList(
-    agentId ? { agentId } : { allAgents: true },
+  // Keep the SWR handle only for `error` + `mutate` (the error/Retry state).
+  const { error, isLoading, mutate } = useFetchTaskList(
+    projectId ? { projectId, visibility: 'all' } : agentId ? { agentId } : { allAgents: true },
   );
+  // Drive the loading/empty boundary off the store's own init flag, NOT SWR's
+  // per-key `data`. On a scope (agent ↔ all) or visibility switch the store
+  // resets `tasks` + `isTaskListInit` together (`scopeChangeResetState`), but
+  // SWR still holds cached `data` for the target key — so keying `hasSettled`
+  // off SWR `data` made it `true` while `tasks` was empty and flashed the "no
+  // tasks" empty during the refetch. `isTaskListInit` flips true only on the
+  // current scope's success and resets in lockstep with `tasks`, so the settled
+  // signal never disagrees with the emptiness signal. Still resets to false on a
+  // failed first load, so we surface loading only while there's no error (below).
+  const isTaskListInit = useTaskStore(taskListSelectors.isTaskListInit);
   const isEmptyHero = useTaskStore(taskListSelectors.isListEmpty);
   const rawViewOptions = useGlobalStore(systemStatusSelectors.taskListViewOptions);
   const viewOptions = useMemo(() => normalizeTaskListViewOptions(rawViewOptions), [rawViewOptions]);
@@ -105,25 +135,26 @@ const AgentTasksPage = memo<AgentTasksPageProps>(({ agentId }) => {
     createTaskModal({
       agentId,
       lockAssignee: !!agentId,
+      projectId,
       onCreated: (task) => {
         navigate(taskDetailPath(task.identifier, agentId ? task.agentId : undefined));
       },
     });
-  }, [agentId, canCreateTask, createActionBehavior.mode, navigate, updateSystemStatus]);
+  }, [agentId, canCreateTask, createActionBehavior.mode, navigate, projectId, updateSystemStatus]);
 
   const handleShowHiddenCompleted = useCallback(() => {
     setViewOptions((prev) => ({ ...prev, hideCompleted: false }));
   }, [setViewOptions]);
 
-  const showTaskAgentPanelToggle = shouldRenderTaskAgentPanelToggle(isMobile);
+  const headerVisibility = getTaskPageHeaderVisibility({ agentId, isEmptyHero, isMobile });
 
   return (
     <Flexbox flex={1} height={'100%'}>
       <NavHeader
-        left={<Breadcrumb />}
+        left={headerVisibility.showBreadcrumb ? <Breadcrumb /> : undefined}
         right={
           <Flexbox horizontal align={'center'} gap={4}>
-            {!agentId && <TaskListVisibilityFilter />}
+            {!agentId && !projectId && <TaskListVisibilityFilter />}
             {(inlineCollapsed || viewMode === 'kanban') && (
               <ActionIcon
                 disabled={createActionBehavior.disabled}
@@ -133,8 +164,10 @@ const AgentTasksPage = memo<AgentTasksPageProps>(({ agentId }) => {
                 onClick={handleCreateTask}
               />
             )}
-            <TasksGroupConfig options={viewOptions} setOptions={setViewOptions} />
-            {showTaskAgentPanelToggle && (
+            {headerVisibility.showViewOptions && (
+              <TasksGroupConfig options={viewOptions} setOptions={setViewOptions} />
+            )}
+            {headerVisibility.showTaskAgentPanelToggle && (
               <ToggleRightPanelButton
                 hideWhenExpanded
                 expand={showTaskAgentPanel}
@@ -151,22 +184,30 @@ const AgentTasksPage = memo<AgentTasksPageProps>(({ agentId }) => {
         }}
       />
       {isEmptyHero ? (
-        <EmptyState agentId={agentId} />
+        <EmptyState agentId={agentId} projectId={projectId} />
       ) : viewMode === 'kanban' ? (
         <Flexbox flex={1} style={{ overflowX: 'auto', overflowY: 'hidden' }}>
-          <KanbanBoard agentId={agentId} routeScope={routeScope} />
+          <KanbanBoard agentId={agentId} projectId={projectId} routeScope={routeScope} />
         </Flexbox>
       ) : (
         <WideScreenContainer
+          fullWidth
           gap={16}
           paddingBlock={16}
+          paddingInline={16}
           wrapperStyle={{ flex: 1, overflowY: 'auto' }}
         >
-          {!inlineCollapsed && <CreateTaskInlineEntry agentId={agentId} lockAssignee={!!agentId} />}
+          {!inlineCollapsed && (
+            <CreateTaskInlineEntry
+              agentId={agentId}
+              lockAssignee={!!agentId}
+              projectId={projectId}
+            />
+          )}
           <TaskList
-            data={data}
+            data={isTaskListInit || undefined}
             error={error}
-            isLoading={isLoading}
+            isLoading={isLoading || (!isTaskListInit && !error)}
             options={viewOptions}
             routeScope={routeScope}
             onRetry={() => mutate()}

@@ -1,17 +1,8 @@
 'use client';
 
-import {
-  Button,
-  Checkbox,
-  copyToClipboard,
-  Flexbox,
-  Popover,
-  Skeleton,
-  Text,
-  usePopoverContext,
-} from '@lobehub/ui';
-import { confirmModal, Select } from '@lobehub/ui/base-ui';
-import { App, Divider } from 'antd';
+import { copyToClipboard, Flexbox, Popover, Skeleton, Text, usePopoverContext } from '@lobehub/ui';
+import { Button, Checkbox, confirmModal, Select, toast } from '@lobehub/ui/base-ui';
+import { Divider } from 'antd';
 import {
   FileOutputIcon,
   ImageIcon,
@@ -53,7 +44,7 @@ interface SharePopoverContentProps {
 
 const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal, topicId }) => {
   const { t } = useTranslation('chat');
-  const { message } = App.useApp();
+
   const [updating, setUpdating] = useState(false);
   const { close } = usePopoverContext();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -98,17 +89,17 @@ const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal, topic
         // Auto-copy the share link the moment link sharing is enabled
         if (visibility === 'link' && shareUrl) {
           await copyToClipboard(shareUrl);
-          message.success(t('shareModal.copyLinkSuccess'));
+          toast.success(t('shareModal.copyLinkSuccess'));
         } else {
-          message.success(t('shareModal.link.visibilityUpdated'));
+          toast.success(t('shareModal.link.visibilityUpdated'));
         }
       } catch {
-        message.error(t('shareModal.link.updateError'));
+        toast.error(t('shareModal.link.updateError'));
       } finally {
         setUpdating(false);
       }
     },
-    [activeTopicId, mutate, message, t, shareUrl],
+    [activeTopicId, mutate, t, shareUrl],
   );
 
   const handleVisibilityChange = useCallback(
@@ -163,8 +154,8 @@ const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal, topic
   const handleCopyLink = useCallback(async () => {
     if (!shareUrl) return;
     await copyToClipboard(shareUrl);
-    message.success(t('shareModal.copyLinkSuccess'));
-  }, [shareUrl, message, t]);
+    toast.success(t('shareModal.copyLinkSuccess'));
+  }, [shareUrl, t]);
 
   const handleOpenModal = useCallback(() => {
     close();
@@ -251,13 +242,7 @@ const SharePopoverContent = memo<SharePopoverContentProps>(({ onOpenModal, topic
       <Divider style={{ margin: '4px 0' }} />
 
       <Flexbox horizontal align="center" justify="space-between">
-        <Button
-          icon={FileOutputIcon}
-          size="small"
-          type="text"
-          variant="text"
-          onClick={handleOpenModal}
-        >
+        <Button icon={FileOutputIcon} size="small" type="text" onClick={handleOpenModal}>
           {t('shareModal.popover.export')}
         </Button>
         {currentVisibility !== 'private' && (

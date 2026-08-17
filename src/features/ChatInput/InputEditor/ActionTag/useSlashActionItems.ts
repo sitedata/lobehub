@@ -5,11 +5,12 @@ import { SkillsIcon } from '@lobehub/ui/icons';
 import isEqual from 'fast-deep-equal';
 import Fuse from 'fuse.js';
 import { $getSelection, $isRangeSelection } from 'lexical';
-import { ArchiveIcon, MessageSquarePlusIcon } from 'lucide-react';
+import { ArchiveIcon, MessageSquarePlusIcon, TargetIcon } from 'lucide-react';
 import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { resolveExecutionTarget } from '@/helpers/executionTarget';
+import { useIsGatewayModeEnabled } from '@/helpers/gatewayMode';
 import { useEffectiveWorkingDirectory } from '@/hooks/useEffectiveWorkingDirectory';
 import { useFetchProjectSkills } from '@/hooks/useFetchProjectSkills';
 import { useAgentStore } from '@/store/agent';
@@ -22,7 +23,8 @@ import type { AgentDocumentSkillItem } from '@/store/tool/slices/agentDocumentSk
 import { useAgentId } from '../../hooks/useAgentId';
 import { useChatInputStore } from '../../store';
 import { INSERT_ACTION_TAG_COMMAND, type InsertActionTagPayload } from './command';
-import { type ActionTagData, BUILTIN_COMMANDS } from './types';
+import { insertGoalTag } from './goalTag';
+import { type ActionTagData, BUILTIN_COMMANDS, GOAL_COMMAND_TYPE } from './types';
 import { useInstalledSkillsAndTools } from './useInstalledSkillsAndTools';
 
 type SlashItem = NonNullable<SlashOptions['items'] extends (infer U)[] ? U : never>;
@@ -69,9 +71,15 @@ export const useSlashActionItems = (): SlashOptions['items'] => {
   const isHetero = useAgentStore((s) =>
     agentId ? agentByIdSelectors.isAgentHeterogeneousById(agentId)(s) : false,
   );
+  const deviceRoutingAvailable = useIsGatewayModeEnabled(agentId);
+  const isWorkspaceAgent = useAgentStore((s) =>
+    agentId ? agentByIdSelectors.isWorkspaceAgentById(agentId)(s) : false,
+  );
   const effectiveTarget = resolveExecutionTarget(agencyConfig, {
-    isHetero,
     clientExecutionAvailable: isDesktop,
+    deviceRoutingAvailable,
+    isHetero,
+    workspaceScoped: isWorkspaceAgent,
   });
   const isDeviceMode = effectiveTarget === 'device' && !!agencyConfig?.boundDeviceId;
   const remoteDeviceId = isDeviceMode ? agencyConfig.boundDeviceId : undefined;
@@ -225,6 +233,19 @@ export const useSlashActionItems = (): SlashOptions['items'] => {
 
       // Built-in commands — line-start only
       if (isAtLineStart) {
+        allItems.push({
+          icon: TargetIcon,
+          key: GOAL_COMMAND_TYPE,
+          label: t('slash.goal' as any),
+          metadata: {
+            category: 'command',
+            description: t('slash.goal.desc' as any, { defaultValue: '' }),
+            type: GOAL_COMMAND_TYPE,
+          },
+          // Unlike the other commands this one is not inserted at the caret —
+          // the chip has to lead the message. See `insertGoalTag`.
+          onSelect: (editor: IEditor) => insertGoalTag(editor, t('slash.goal' as any) as string),
+        } as SlashItem);
         for (const action of BUILTIN_COMMANDS) {
           if (action.type === 'newTopic' && !activeTopicId) continue;
           allItems.push(makeCommandItem(action) as SlashItem);

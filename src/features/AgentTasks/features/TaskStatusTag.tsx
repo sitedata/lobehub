@@ -7,7 +7,7 @@ import type { ReactNode } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { getTaskStatusMeta } from '@/components/StatusIcon';
+import { TASK_STATUS_VISUALS } from '@/components/ExecutionStatus';
 import { usePermission } from '@/hooks/usePermission';
 import { useTaskStore } from '@/store/task';
 
@@ -20,24 +20,17 @@ interface StatusMeta {
   labelKey: string;
 }
 
-// Labels stay local; icon + color come from the shared canonical status map so
-// the tag can never drift from the sidebar / kanban glyphs.
-const STATUS_LABELS: Record<TaskStatus, { label: string; labelKey: string }> = {
-  backlog: { label: 'Backlog', labelKey: 'status.backlog' },
-  canceled: { label: 'Canceled', labelKey: 'status.canceled' },
-  completed: { label: 'Completed', labelKey: 'status.completed' },
-  failed: { label: 'Failed', labelKey: 'status.failed' },
-  paused: { label: 'Pending review', labelKey: 'status.paused' },
-  running: { label: 'Running', labelKey: 'status.running' },
-  scheduled: { label: 'Scheduled', labelKey: 'status.scheduled' },
+// Icons/colors come from the shared execution-status visuals; this map only
+// adds the task-specific labels.
+export const STATUS_META: Record<TaskStatus, StatusMeta> = {
+  backlog: { ...TASK_STATUS_VISUALS.backlog, label: 'Backlog', labelKey: 'status.backlog' },
+  canceled: { ...TASK_STATUS_VISUALS.canceled, label: 'Canceled', labelKey: 'status.canceled' },
+  completed: { ...TASK_STATUS_VISUALS.completed, label: 'Completed', labelKey: 'status.completed' },
+  failed: { ...TASK_STATUS_VISUALS.failed, label: 'Failed', labelKey: 'status.failed' },
+  paused: { ...TASK_STATUS_VISUALS.paused, label: 'Pending review', labelKey: 'status.paused' },
+  running: { ...TASK_STATUS_VISUALS.running, label: 'Running', labelKey: 'status.running' },
+  scheduled: { ...TASK_STATUS_VISUALS.scheduled, label: 'Scheduled', labelKey: 'status.scheduled' },
 };
-
-export const STATUS_META: Record<TaskStatus, StatusMeta> = Object.fromEntries(
-  (Object.keys(STATUS_LABELS) as TaskStatus[]).map((status) => [
-    status,
-    { ...getTaskStatusMeta(status), ...STATUS_LABELS[status] },
-  ]),
-) as Record<TaskStatus, StatusMeta>;
 
 export const USER_SELECTABLE_STATUSES: TaskStatus[] = [
   'backlog',

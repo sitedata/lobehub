@@ -1,5 +1,6 @@
 import { type GoogleGenAIOptions } from '@google/genai';
 import {
+  AgentRuntimeError,
   mergeModelRuntimeHooks,
   ModelRuntime,
   type ModelRuntimeHooks,
@@ -8,21 +9,27 @@ import { LobeVertexAI } from '@lobechat/model-runtime/vertexai';
 import {
   type AWSBedrockKeyVault,
   type AzureOpenAIKeyVault,
+  ChatErrorType,
   type ClientSecretPayload,
   type CloudflareKeyVault,
   type ComfyUIKeyVault,
   type GithubCopilotKeyVault,
+  type OAuthDeviceFlowKeyVault,
   type OpenAICompatibleKeyVault,
+  type SuperGrokKeyVault,
   type VertexAIKeyVault,
 } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import { ModelProvider } from 'model-bank';
+import { AiProviderBaseURLSchema } from 'model-bank/aiProvider';
+import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
 import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
 import { createLLMGenerationTracingHook } from '@/server/services/llmGenerationTracing/hook';
+import { ensureFreshOAuthToken } from '@/server/services/oauthDeviceFlow/refresh';
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
 import apiKeyManager from './apiKeyManager';
@@ -38,6 +45,8 @@ type ProviderKeyVaults = OpenAICompatibleKeyVault &
   CloudflareKeyVault &
   ComfyUIKeyVault &
   GithubCopilotKeyVault &
+  OAuthDeviceFlowKeyVault &
+  SuperGrokKeyVault &
   VertexAIKeyVault;
 
 /**
@@ -143,6 +152,24 @@ export const buildPayloadFromKeyVaults = (
           ? Number(keyVaults.bearerTokenExpiresAt)
           : undefined,
         oauthAccessToken: keyVaults.oauthAccessToken,
+        runtimeProvider,
+      };
+    }
+
+    case ModelProvider.SuperGrok: {
+      // OAuth-only provider: the (already refreshed) access token IS the
+      // bearer credential for api.x.ai — expose it as apiKey so the runtime
+      // stays a stateless OpenAI-compatible client.
+      return {
+        apiKey: keyVaults.oauthAccessToken,
+        runtimeProvider,
+      };
+    }
+
+    case ModelProvider.ChatGPT: {
+      return {
+        apiKey: keyVaults.oauthAccessToken,
+        chatgptAccountId: keyVaults.oauthAccountId,
         runtimeProvider,
       };
     }
@@ -256,6 +283,18 @@ const getParamsFromPayload = (provider: string, payload: ClientSecretPayload) =>
         bearerToken: payload.bearerToken,
         bearerTokenExpiresAt: payload.bearerTokenExpiresAt,
         oauthAccessToken: payload.oauthAccessToken,
+      };
+    }
+
+    case ModelProvider.SuperGrok: {
+      // OAuth-only: never fall back to env API keys
+      return { apiKey: payload.apiKey };
+    }
+
+    case ModelProvider.ChatGPT: {
+      return {
+        apiKey: payload.apiKey,
+        chatgptAccountId: payload.chatgptAccountId,
       };
     }
 
@@ -375,6 +414,17 @@ export const initModelRuntimeWithUserPayload = (
 ) => {
   const runtimeProvider = payload.runtimeProvider ?? provider;
 
+  /**
+   * User-configured endpoints can come from older clients or persisted rows that predate
+   * input validation. Reject them before an SDK appends a request path and throws an
+   * unclassified ERR_INVALID_URL, which would otherwise surface as a server-side 500.
+   */
+  if (payload.baseURL && !AiProviderBaseURLSchema.safeParse(payload.baseURL).success) {
+    throw AgentRuntimeError.createError(ChatErrorType.BadRequest, {
+      message: 'Invalid provider baseURL',
+    });
+  }
+
   if (runtimeProvider === ModelProvider.VertexAI) {
     const vertexOptions = buildVertexOptions(payload, params);
     const runtime = LobeVertexAI.initFromVertexAI(vertexOptions);
@@ -432,7 +482,27 @@ export const initModelRuntimeFromDB = async (
 
   // 3. Build ClientSecretPayload from keyVaults based on runtimeProvider
   // This ensures provider-specific fields (e.g., cloudflareBaseURLOrAccountID) are included
-  const keyVaults = (providerConfig?.keyVaults || {}) as ProviderKeyVaults;
+  let keyVaults = (providerConfig?.keyVaults || {}) as ProviderKeyVaults;
+
+  // 3.5. OAuth device-flow providers with rotating refresh tokens (e.g.
+  // SuperGrok): proactively refresh + persist the token pair before building
+  // the payload. Mounted here because every server-side LLM call path (webapi
+  // chat, agent runtime transport, async image/video, lambda routers)
+  // converges on this function.
+  const oauthDeviceFlowConfig = DEFAULT_MODEL_PROVIDER_LIST.find((p) => p.id === provider)?.settings
+    ?.oauthDeviceFlow;
+  if (oauthDeviceFlowConfig?.refreshTokenGrant) {
+    const freshKeyVaults = await ensureFreshOAuthToken({
+      config: oauthDeviceFlowConfig,
+      db,
+      keyVaults,
+      providerId: provider,
+      userId,
+      workspaceId,
+    });
+    keyVaults = { ...keyVaults, ...freshKeyVaults } as ProviderKeyVaults;
+  }
+
   const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
 
   // 4. Get business hooks (billing in cloud, undefined in OSS)

@@ -95,6 +95,27 @@ describe('aiAgentRouter.heteroIngest / heteroFinish', () => {
       });
     });
 
+    it.each(['opencode', 'trae'] as const)(
+      'accepts %s event batches from a device CLI',
+      async (agentType) => {
+        const events = [buildEvent('stream_start', 0)];
+
+        await createCaller().heteroIngest({
+          agentType,
+          events,
+          operationId: `op-${agentType}`,
+          topicId: 'topic-1',
+        });
+
+        expect(mockHeteroIngest).toHaveBeenCalledWith({
+          agentType,
+          events,
+          operationId: `op-${agentType}`,
+          topicId: 'topic-1',
+        });
+      },
+    );
+
     it('wraps service errors into INTERNAL_SERVER_ERROR so the CLI ingester retries', async () => {
       mockHeteroIngest.mockRejectedValueOnce(new Error('redis down'));
 
@@ -152,6 +173,26 @@ describe('aiAgentRouter.heteroIngest / heteroFinish', () => {
         topicId: 'topic-1',
       });
     });
+
+    it.each(['opencode', 'trae'] as const)(
+      'accepts a %s session id for subsequent device resume',
+      async (agentType) => {
+        await createCaller().heteroFinish({
+          agentType,
+          operationId: `op-${agentType}`,
+          result: 'success',
+          sessionId: `${agentType}-session-1`,
+          topicId: 'topic-1',
+        });
+
+        expect(mockHeteroFinish).toHaveBeenCalledWith(
+          expect.objectContaining({
+            agentType,
+            sessionId: `${agentType}-session-1`,
+          }),
+        );
+      },
+    );
 
     it('passes through error classification', async () => {
       await createCaller().heteroFinish({

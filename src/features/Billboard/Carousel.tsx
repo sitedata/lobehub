@@ -1,7 +1,8 @@
 'use client';
 
 import { useAnalytics } from '@lobehub/analytics/react';
-import { ActionIcon, Button, Flexbox, Tooltip } from '@lobehub/ui';
+import { ActionIcon, Flexbox, Tooltip } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { Carousel as AntCarousel } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { X } from 'lucide-react';
@@ -20,6 +21,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { GlobalBillboard, GlobalBillboardItem } from '@/types/serverConfig';
 
+import { resolveBillboardAction, runBillboardAction } from './actions';
 import { resolveBillboardItem } from './locale';
 
 type BillboardItem = GlobalBillboardItem;
@@ -61,9 +63,22 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   closeButton: css`
     position: absolute;
-    z-index: 2;
+    z-index: 10;
     inset-block-start: 8px;
     inset-inline-end: 8px;
+
+    /* Sits over the cover image (140px band) — give it its own opaque surface so
+       the icon reads on any image, and lift z-index above the carousel dots /
+       slick internals. */
+    color: #fff;
+
+    background: rgb(0 0 0 / 45%);
+    backdrop-filter: blur(4px);
+
+    &:hover {
+      color: #fff;
+      background: rgb(0 0 0 / 60%);
+    }
   `,
   description: css`
     overflow: hidden;
@@ -128,18 +143,33 @@ const ItemContent = memo<{ billboardSlug: string; item: BillboardItem; position:
       [item, i18n.language],
     );
 
-    const handleCtaClick = useCallback(() => {
-      analytics?.track({
-        name: 'billboard_cta_clicked',
-        properties: {
-          billboard_slug: billboardSlug,
-          item_id: item.id,
-          link_url: item.linkUrl,
-          position,
-          spm: 'billboard.cta.clicked',
-        },
-      });
-    }, [analytics, billboardSlug, item.id, item.linkUrl, position]);
+    const action = resolveBillboardAction(item.action);
+
+    const trackCtaClick = useCallback(
+      (extra: Record<string, unknown>) => {
+        analytics?.track({
+          name: 'billboard_cta_clicked',
+          properties: {
+            billboard_slug: billboardSlug,
+            item_id: item.id,
+            position,
+            spm: 'billboard.cta.clicked',
+            ...extra,
+          },
+        });
+      },
+      [analytics, billboardSlug, item.id, position],
+    );
+
+    const handleActionClick = useCallback(async () => {
+      if (!action) return;
+      trackCtaClick({ action });
+      await Promise.resolve(runBillboardAction(action)).catch(() => {});
+    }, [action, trackCtaClick]);
+
+    const handleLinkClick = useCallback(() => {
+      trackCtaClick({ link_url: item.linkUrl });
+    }, [trackCtaClick, item.linkUrl]);
 
     const titleRef = useRef<HTMLDivElement>(null);
     const descRef = useRef<HTMLDivElement>(null);
@@ -189,18 +219,24 @@ const ItemContent = memo<{ billboardSlug: string; item: BillboardItem; position:
             ) : (
               descNode
             ))}
-          {item.linkUrl && (
-            <a
-              className={styles.action}
-              href={item.linkUrl}
-              rel="noopener noreferrer"
-              target="_blank"
-              onClick={handleCtaClick}
-            >
-              <Button block size="small" type="primary">
-                {resolved.linkLabel ?? t('billboard.learnMore')}
-              </Button>
-            </a>
+          {action ? (
+            <Button block className={styles.action} type="primary" onClick={handleActionClick}>
+              {resolved.linkLabel ?? t('billboard.learnMore')}
+            </Button>
+          ) : (
+            item.linkUrl && (
+              <a
+                className={styles.action}
+                href={item.linkUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+                onClick={handleLinkClick}
+              >
+                <Button block type="primary">
+                  {resolved.linkLabel ?? t('billboard.learnMore')}
+                </Button>
+              </a>
+            )
           )}
         </Flexbox>
       </Flexbox>

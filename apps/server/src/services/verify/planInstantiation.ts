@@ -1,9 +1,11 @@
 import debug from 'debug';
 
+import { GoalModel } from '@/database/models/goal';
 import { TaskModel } from '@/database/models/task';
 import { VerifyRunModel } from '@/database/models/verifyRun';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { AcceptanceService } from './acceptanceService';
 import { VerifyPlanGeneratorService } from './planGenerator';
 
 const log = debug('lobe-server:verify-plan-instantiation');
@@ -34,6 +36,26 @@ export const instantiateVerifyPlanOnStart = async (
 ): Promise<void> => {
   try {
     const taskModel = new TaskModel(db, userId, workspaceId);
+
+    // A goal task entering a run round is `running` — the single transition
+    // point shared by round 1, reject-spawned rounds and manual restarts.
+    // Terminal decisions stay terminal: an accepted (`achieved`) or canceled
+    // goal is never silently re-opened by a stray run.
+    try {
+      const goalModel = new GoalModel(db, userId, workspaceId);
+      const goal = await goalModel.findBySubject('task', params.taskId);
+      if (
+        goal &&
+        goal.status !== 'running' &&
+        goal.status !== 'achieved' &&
+        goal.status !== 'canceled'
+      ) {
+        await goalModel.updateStatus(goal.id, 'running');
+      }
+    } catch (error) {
+      log('goal running transition failed for task %s (non-fatal): %O', params.taskId, error);
+    }
+
     const verifyConfig = await taskModel.resolveVerifyConfig(params.taskId);
 
     // Opt-in to verify, then pick the plan shape:
@@ -82,10 +104,27 @@ export const instantiateVerifyPlanOnStart = async (
         await runModel.setMetadata(run.id, { maxRepairRounds: verifyConfig.maxIterations });
       }
       await runModel.confirmPlan(run.id);
+
+      // A task verification round belongs to its business-level Acceptance from
+      // the moment the plan is confirmed. This lets the task surface show live
+      // planned/verifying/repairing progress instead of waiting for an external
+      // ingest command to create the aggregate after verification has finished.
+      const acceptanceService = new AcceptanceService(db, userId, workspaceId);
+      const acceptance = await acceptanceService.ensureForSubject('task', params.taskId, {
+        requirement: verifyConfig.requirement?.trim() || goal,
+      });
+      // Task verify config is the source that produced this plan. Keep the
+      // aggregate goal in lockstep when a later run changes that source.
+      await acceptanceService.acceptanceModel.update(acceptance.id, {
+        requirement: verifyConfig.requirement?.trim() || goal,
+      });
+      await acceptanceService.attachRun(run.id, acceptance.id);
+
       log(
-        'instantiated + confirmed verify plan for op %s (%d items)',
+        'instantiated + confirmed verify plan for op %s (%d items), acceptance %s',
         params.operationId,
         run.plan.length,
+        acceptance.id,
       );
     }
   } catch (error) {
